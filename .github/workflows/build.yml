@@ -8,10 +8,179 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: for z in *.zip; do unzip -qo "$z"; done
-      - name: Check project
+      - name: Make TurboFPS
         run: |
-          ls
-          test -d turbo || { echo "НЕТ ПАПКИ turbo: загрузи turbofps.zip в репозиторий"; exit 1; }
+          cd adaptivefps
+          sed -i 's/archives_base_name=.*/archives_base_name=turbofps/' gradle.properties
+          sed -i 's/"id": "adaptivefps"/"id": "turbofps"/; s/"name": "AdaptiveFPS"/"name": "TurboFPS"/' src/main/resources/fabric.mod.json
+          sed -i 's/adaptivefps.json/turbofps.json/; s/targetFps = 120/targetFps = 200/; s/minViewDistance = 4/minViewDistance = 2/; s/menuFps = 60/menuFps = 30/' src/main/java/com/example/adaptivefps/Config.java
+          cat > src/main/java/com/example/adaptivefps/Controller.java <<'EOF'
+          package com.example.adaptivefps;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.screen.option.GameOptionsScreen;
+          import net.minecraft.client.gui.screen.option.OptionsScreen;
+          import net.minecraft.client.option.CloudRenderMode;
+          import net.minecraft.client.option.GameOptions;
+          import net.minecraft.client.option.SimpleOption;
+
+          public class Controller {
+              public static final int MAX_LEVEL = 7;
+              private static final int CHECK_TICKS = 10;
+              private static final int COOLDOWN_TICKS = 60;
+              private static final int RECOVER_TICKS = 20 * 30;
+
+              private static final int[][] PRESETS = {
+                  {99, 500, 0, 1, 1, 99, 99, 99, 0},
+                  {16, 100, 0, 1, 1,  3, 99, 99, 0},
+                  {12,  75, 1, 0, 0,  2, 12,  2, 1},
+                  { 8,  60, 1, 0, 0,  0,  8,  1, 1},
+                  { 6,  50, 2, 0, 0,  0,  6,  0, 1},
+                  { 4,  50, 2, 0, 0,  0,  5,  0, 1},
+                  { 3,  50, 2, 0, 0,  0,  5,  0, 1},
+                  { 2,  50, 2, 0, 0,  0,  5,  0, 1},
+              };
+
+              private int level = 0;
+              private int tickCounter = 0;
+              private int sinceChange = COOLDOWN_TICKS;
+              private int goodTicks = 0;
+              private double avg = 0;
+
+              private boolean captured = false;
+              private int baseView, baseBlend, baseSim, baseMip, baseMaxFps;
+              private double baseEntityScale;
+              private Object baseParticles, baseGraphics;
+              private CloudRenderMode baseClouds;
+              private boolean baseShadows;
+              private boolean throttledFps = false;
+
+              public int level() { return level; }
+              public double avgFps() { return avg; }
+
+              public void tick(MinecraftClient client) {
+                  if (client.options == null) return;
+                  Config cfg = AdaptiveFpsClient.CONFIG;
+                  if (!cfg.enabled) return;
+
+                  if (client.currentScreen instanceof OptionsScreen || client.currentScreen instanceof GameOptionsScreen) {
+                      if (captured) restore(client);
+                      return;
+                  }
+
+                  handleFpsCaps(client, cfg);
+
+                  if (client.world == null) return;
+                  if (++tickCounter < CHECK_TICKS) return;
+                  tickCounter = 0;
+                  sinceChange += CHECK_TICKS;
+
+                  int fps = client.getCurrentFps();
+                  avg = avg == 0 ? fps : avg * 0.5 + fps * 0.5;
+
+                  if (!client.isWindowFocused() || client.currentScreen != null) return;
+
+                  int cap = client.options.getMaxFps().getValue();
+                  double t = cap >= 260 ? cfg.targetFps : Math.min(cfg.targetFps, cap * 0.95);
+
+                  if (avg < t * 0.9 && level < MAX_LEVEL && sinceChange >= COOLDOWN_TICKS) {
+                      int step = avg < t * 0.5 ? 2 : 1;
+                      setLevel(client, Math.min(MAX_LEVEL, level + step));
+                      goodTicks = 0;
+                  } else if (avg > t * 1.25 && level > 0) {
+                      goodTicks += CHECK_TICKS;
+                      if (goodTicks >= RECOVER_TICKS && sinceChange >= COOLDOWN_TICKS) {
+                          setLevel(client, level - 1);
+                          goodTicks = 0;
+                      }
+                  } else {
+                      goodTicks = 0;
+                  }
+              }
+
+              private void capture(GameOptions o) {
+                  if (captured) return;
+                  baseView = o.getViewDistance().getValue();
+                  baseSim = o.getSimulationDistance().getValue();
+                  baseMip = o.getMipmapLevels().getValue();
+                  baseEntityScale = o.getEntityDistanceScaling().getValue();
+                  baseParticles = o.getParticles().getValue();
+                  baseGraphics = o.getGraphicsMode().getValue();
+                  baseClouds = o.getCloudRenderMode().getValue();
+                  baseShadows = o.getEntityShadows().getValue();
+                  baseBlend = o.getBiomeBlendRadius().getValue();
+                  captured = true;
+              }
+
+              private void setLevel(MinecraftClient client, int newLevel) {
+                  GameOptions o = client.options;
+                  capture(o);
+                  level = newLevel;
+                  sinceChange = 0;
+                  int[] p = PRESETS[level];
+
+                  o.getViewDistance().setValue(Math.min(baseView, Math.max(Math.max(2, AdaptiveFpsClient.CONFIG.minViewDistance), p[0])));
+                  o.getSimulationDistance().setValue(Math.min(baseSim, Math.max(5, p[6])));
+                  o.getEntityDistanceScaling().setValue(Math.min(baseEntityScale, Math.max(0.5, p[1] / 100.0)));
+                  o.getMipmapLevels().setValue(Math.min(baseMip, p[7]));
+                  o.getBiomeBlendRadius().setValue(Math.min(baseBlend, p[5]));
+                  o.getEntityShadows().setValue(baseShadows && p[3] == 1);
+                  o.getCloudRenderMode().setValue(p[4] == 1 ? baseClouds : CloudRenderMode.OFF);
+
+                  Enum<?> bp = (Enum<?>) baseParticles;
+                  Object[] modes = bp.getDeclaringClass().getEnumConstants();
+                  setRaw(o.getParticles(), modes[Math.min(Math.max(bp.ordinal(), p[2]), modes.length - 1)]);
+
+                  setRaw(o.getGraphicsMode(), p[8] == 1 ? enumByName(baseGraphics, "FAST") : baseGraphics);
+              }
+
+              private void handleFpsCaps(MinecraftClient client, Config cfg) {
+                  GameOptions o = client.options;
+                  int cap = 0;
+                  if (!client.isWindowFocused()) cap = cfg.backgroundFps;
+                  else if (client.currentScreen != null && cfg.menuFps > 0) cap = cfg.menuFps;
+
+                  if (cap > 0) {
+                      if (!throttledFps) { baseMaxFps = o.getMaxFps().getValue(); throttledFps = true; }
+                      if (o.getMaxFps().getValue() != cap) o.getMaxFps().setValue(cap);
+                  } else if (throttledFps) {
+                      o.getMaxFps().setValue(baseMaxFps);
+                      throttledFps = false;
+                  }
+              }
+
+              public void restore(MinecraftClient client) {
+                  if (client.options == null) return;
+                  GameOptions o = client.options;
+                  if (captured) {
+                      o.getViewDistance().setValue(baseView);
+                      o.getSimulationDistance().setValue(baseSim);
+                      o.getMipmapLevels().setValue(baseMip);
+                      o.getEntityDistanceScaling().setValue(baseEntityScale);
+                      o.getEntityShadows().setValue(baseShadows);
+                      o.getCloudRenderMode().setValue(baseClouds);
+                      o.getBiomeBlendRadius().setValue(baseBlend);
+                      setRaw(o.getParticles(), baseParticles);
+                      setRaw(o.getGraphicsMode(), baseGraphics);
+                      captured = false;
+                  }
+                  if (throttledFps) { o.getMaxFps().setValue(baseMaxFps); throttledFps = false; }
+                  level = 0; sinceChange = COOLDOWN_TICKS; goodTicks = 0;
+              }
+
+              private static Object enumByName(Object any, String name) {
+                  for (Object c : ((Enum<?>) any).getDeclaringClass().getEnumConstants()) {
+                      if (((Enum<?>) c).name().equals(name)) return c;
+                  }
+                  return any;
+              }
+
+              @SuppressWarnings({"unchecked", "rawtypes"})
+              private static void setRaw(SimpleOption opt, Object value) {
+                  opt.setValue(value);
+              }
+          }
+          EOF
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -20,8 +189,8 @@ jobs:
         with:
           gradle-version: 9.2.0
       - run: gradle build
-        working-directory: turbo
+        working-directory: adaptivefps
       - uses: actions/upload-artifact@v4
         with:
           name: turbofps-jar
-          path: turbo/build/libs/*.jar
+          path: adaptivefps/build/libs/*.jar
