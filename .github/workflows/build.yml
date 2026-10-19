@@ -8,6 +8,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: for z in *.zip; do unzip -qo "$z"; done
+      - name: Check project
+        run: |
+          ls
+          test -d turbo || { echo "НЕТ ПАПКИ turbo: загрузи turbofps.zip в репозиторий"; exit 1; }
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
