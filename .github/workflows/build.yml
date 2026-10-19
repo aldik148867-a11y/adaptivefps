@@ -7,7 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: unzip -q ./*.zip
+      - run: for z in *.zip; do unzip -qo "$z"; done
+      - run: if [ -f fix/Controller.java ]; then cp fix/Controller.java adaptivefps/src/main/java/com/example/adaptivefps/Controller.java; fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
