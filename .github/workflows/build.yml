@@ -8,7 +8,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: for z in *.zip; do unzip -qo "$z"; done
-      - run: if [ -f fix/Controller.java ]; then cp fix/Controller.java adaptivefps/src/main/java/com/example/adaptivefps/Controller.java; fi
+      - name: Patch code
+        run: |
+          python3 - <<'EOF'
+          p='adaptivefps/src/main/java/com/example/adaptivefps/Controller.java'
+          s=open(p,encoding='utf-8').read()
+          s=s.replace("import net.minecraft.client.option.ParticlesMode;","import net.minecraft.client.option.SimpleOption;")
+          s=s.replace("private ParticlesMode baseParticles;","private Object baseParticles;")
+          s=s.replace("o.getParticles().setValue(ParticlesMode.values()[Math.max(baseParticles.ordinal(), p[2])]);","Enum<?> bp = (Enum<?>) baseParticles; Object[] modes = bp.getDeclaringClass().getEnumConstants(); setRaw(o.getParticles(), modes[Math.min(Math.max(bp.ordinal(), p[2]), modes.length - 1)]);")
+          s=s.replace("o.getParticles().setValue(baseParticles);","setRaw(o.getParticles(), baseParticles);")
+          i=s.rstrip().rfind("}")
+          s=s[:i]+"    @SuppressWarnings({\"unchecked\",\"rawtypes\"})\n    private static void setRaw(SimpleOption opt, Object value) { opt.setValue(value); }\n}\n"
+          open(p,'w',encoding='utf-8').write(s)
+          EOF
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
